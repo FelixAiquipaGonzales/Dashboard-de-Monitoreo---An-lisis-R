@@ -1,0 +1,220 @@
+---
+title: "Dashboard de Monitoreo de Piscigranjas"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: rows
+    vertical_layout: fill
+    theme: 
+      version: 4
+      bg: "#101010"
+      fg: "#FDF7F7" 
+      primary: "#0ea5e9"
+      navbar-bg: "#0f172a"
+      base_font: 
+        google: "Outfit"
+      heading_font:
+        google: "Outfit"
+---
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+library(leaflet)
+library(sf)
+library(dplyr)
+library(plotly)
+library(htmltools)
+
+# --- CARGA Y PREPARACIÓN DE DATOS ---
+
+# Nombre del archivo GeoJSON
+archivo_datos <- "capa/Piscigranjas_Finales.geojson"
+
+# Función para generar datos simulados si no existe el archivo
+generar_datos_simulados <- function() {
+  # Coordenadas centrales aproximadas de una zona en Perú (UTM 18S simulado -> LatLon)
+  # Nota: Para simulación usamos Lat/Lon directos, pero asignamos CRS 4326
+  df <- data.frame(
+    id = 1:100,
+    Estado = sample(c("Bueno", "Regular", "Malo"), 100, replace = TRUE, prob = c(0.5, 0.3, 0.2)),
+    lng = runif(100, -76.0, -75.0), # Zona aproximada
+    lat = runif(100, -9.0, -8.0),
+    Codigo = paste0("CP", sprintf("%03d", 1:100)),
+    Valor_P = sample(1:5, 100, replace = TRUE)
+  )
+  st_as_sf(df, coords = c("lng", "lat"), crs = 4326)
+}
+
+if (file.exists(archivo_datos)) {
+  # Leer el archivo GeoJSON
+  piscigranjas_raw <- st_read(archivo_datos, quiet = TRUE)
+  
+  # --- TRANSFORMACIÓN DE PROYECCIÓN (CRÍTICO) ---
+  # El usuario indica que los datos vienen en EPSG:32718 (WGS 84 / UTM zone 18S)
+  # Leaflet necesita EPSG:4326 (Latitud/Longitud).
+  # st_transform realiza esta conversión matemática precisa.
+  
+  # Verificamos si tiene CRS asignado, si no, asumimos 32718 y transformamos
+  if (is.na(st_crs(piscigranjas_raw))) {
+    st_crs(piscigranjas_raw) <- 32718
+  }
+  
+  piscigranjas <- st_transform(piscigranjas_raw, 4326)
+  
+} else {
+  piscigranjas <- generar_datos_simulados()
+}
+
+# --- ESTANDARIZACIÓN DE NOMBRES DE COLUMNAS ---
+# Identificar columnas reales para evitar errores de encoding
+col_codigo_real <- grep("C.digo|Codigo", names(piscigranjas), value = TRUE, ignore.case = TRUE)[1]
+col_valor_real <- grep("Valor", names(piscigranjas), value = TRUE, ignore.case = TRUE)[1]
+
+# Renombrar a nombres estándar para usar en todo el script
+# Usamos tryCatch para evitar errores si no se encuentran (aunque deberían estar)
+if (!is.na(col_codigo_real)) {
+  names(piscigranjas)[names(piscigranjas) == col_codigo_real] <- "Codigo"
+}
+if (!is.na(col_valor_real)) {
+  names(piscigranjas)[names(piscigranjas) == col_valor_real] <- "Valor_P"
+}
+
+# --- CONFIGURACIÓN DE ESTILOS ---
+
+# Paleta de colores consistente
+colores_estado <- c("Bueno" = "#10b981", "Regular" = "#f59e0b", "Malo" = "#ef4444")
+icono_color <- colorFactor(palette = colores_estado, domain = piscigranjas$Estado)
+
+```
+
+Row {data-height=120}
+-----------------------------------------------------------------------
+
+### Total Piscigranjas
+
+```{r}
+valueBox(nrow(piscigranjas), icon = "fa-fish", color = "#0ea5e9")
+```
+
+### Estado Bueno
+
+```{r}
+n_bueno <- sum(piscigranjas$Estado == "Bueno", na.rm = TRUE)
+valueBox(n_bueno, icon = "fa-check-circle", color = "#10b981")
+```
+
+### Estado Regular
+
+```{r}
+n_regular <- sum(piscigranjas$Estado == "Regular", na.rm = TRUE)
+valueBox(n_regular, icon = "fa-exclamation-circle", color = "#f59e0b")
+```
+
+### Estado Malo
+
+```{r}
+n_malo <- sum(piscigranjas$Estado == "Malo", na.rm = TRUE)
+valueBox(n_malo, icon = "fa-times-circle", color = "#ef4444")
+```
+
+Row {data-height=650}
+-----------------------------------------------------------------------
+
+### Mapa Geoespacial Interactivo
+
+```{r}
+# Crear el mapa base con Leaflet
+leaflet(piscigranjas) %>%
+  # --- MAPAS BASE (Capas) ---
+  # Mapa Oscuro (Ideal para dashboards modernos)
+  addProviderTiles(providers$CartoDB.DarkMatter, group = "Mapa Oscuro") %>%
+  # Mapa de Satélite (Esri World Imagery)
+  addProviderTiles(providers$Esri.WorldImagery, group = "Satélite") %>%
+  # Mapa Claro (Positron)
+  addProviderTiles(providers$CartoDB.Positron, group = "Mapa Claro") %>%
+  
+  # --- CAPA DE DATOS (Puntos) ---
+  addCircleMarkers(
+    radius = 6,
+    color = ~icono_color(Estado),
+    stroke = TRUE,
+    weight = 1,
+    opacity = 1,
+    fillOpacity = 0.8,
+    group = "Piscigranjas",
+    popup = ~paste0(
+      "<div style='font-family: Outfit, sans-serif; color: #333;'>",
+      "<h4 style='margin: 0 0 5px 0; color: #0ea5e9;'>", tryCatch(Codigo, error = function(e) "Piscigranja"), "</h4>",
+      "<b>Estado:</b> ", Estado, "<br>",
+      "<b>Valor P:</b> ", tryCatch(Valor_P, error = function(e) "N/A"), "<br>",
+      "</div>"
+    ),
+    label = ~paste0("Estado: ", Estado)
+  ) %>%
+  
+  # --- CONTROLES ---
+  # Control de Capas (Layer Control)
+  addLayersControl(
+    baseGroups = c("Mapa Oscuro", "Satélite", "Mapa Claro"),
+    overlayGroups = c("Piscigranjas"),
+    options = layersControlOptions(collapsed = FALSE)
+  ) %>%
+  
+  # Leyenda
+  addLegend(
+    position = "bottomright",
+    pal = icono_color,
+    values = ~Estado,
+    title = "Estado de Conservación",
+    opacity = 1
+  ) %>%
+  
+  # Miniminapa
+  addMiniMap(
+    tiles = providers$CartoDB.DarkMatter,
+    toggleDisplay = TRUE,
+    position = "bottomleft"
+  )
+```
+
+### Análisis Estadístico
+
+```{r}
+# Preparar datos para el gráfico
+df_resumen <- piscigranjas %>%
+  st_drop_geometry() %>%
+  group_by(Estado) %>%
+  summarise(Cantidad = n())
+
+# Gráfico interactivo con Plotly
+plot_ly(df_resumen, x = ~Estado, y = ~Cantidad, type = 'bar',
+        marker = list(color = ~colores_estado[Estado])) %>%
+  layout(
+    title = list(text = "Distribución por Estado", font = list(size = 16)),
+    xaxis = list(title = "Estado de Conservación", color = "#cbd5e1"),
+    yaxis = list(title = "Cantidad de Piscigranjas", color = "#cbd5e1"),
+    paper_bgcolor = 'rgba(0,0,0,0)',
+    plot_bgcolor = 'rgba(255,255,255,0.05)',
+    font = list(color = '#FDF7F7'),
+    margin = list(t = 40, b = 40, l = 40, r = 20)
+  )
+```
+
+Row {data-height=230}
+-----------------------------------------------------------------------
+
+### Registro Detallado de Datos
+
+```{r}
+# Tabla de datos
+df_tabla <- piscigranjas %>%
+  st_drop_geometry() %>%
+  select(any_of(c("Codigo", "Estado", "Valor_P"))) %>%
+  head(100) %>%
+  rename(
+    `Código` = Codigo,
+    `Valor P` = Valor_P
+  )
+
+# Renderizar tabla
+knitr::kable(df_tabla)
+```

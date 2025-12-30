@@ -1,0 +1,26 @@
+# R specific
+.Rhistory
+.RData
+.Rproj.user
+.Renviron
+/.Rproj.user/
+
+# Mac
+.DS_Store
+
+# RStudio
+*.Rproj
+
+# renv
+renv/library/
+renv/staging/
+
+# data and large outputs
+/output/
+/data/
+
+# personal settings
+.Ruserdata
+
+# HTML output
+dashboard_piscigranjas.html
